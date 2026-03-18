@@ -4,9 +4,9 @@ import { InputManager } from "../input/InputManager";
 import { PhysicsWorld } from "../physics/PhysicsWorld";
 
 const SPEED = 7;
-const JUMP_FORCE = 10;
+const JUMP_FORCE = 6;
 const SENSITIVITY = 0.002;
-const PLAYER_HEIGHT = 1.7;
+const PLAYER_HEIGHT = 2.4;
 const MIN_AIRTIME = 0.3;
 
 export class Player {
@@ -22,11 +22,11 @@ export class Player {
     this.camera = camera;
 
     const bodyDesc = physics.RAPIER.RigidBodyDesc.dynamic()
-      .setTranslation(0, 20, 0)
+      .setTranslation(-83.79, 10, -8.14)
       .lockRotations();
     this.body = physics.world.createRigidBody(bodyDesc);
 
-    const colliderDesc = physics.RAPIER.ColliderDesc.capsule(0.5, 0.35)
+    const colliderDesc = physics.RAPIER.ColliderDesc.capsule(0.8, 0.35)
       .setFriction(0.0)
       .setRestitution(0.0);
     physics.world.createCollider(colliderDesc, this.body);
@@ -66,9 +66,12 @@ export class Player {
 
     dir.normalize().applyEuler(new THREE.Euler(0, this.yaw, 0));
 
+    const isRunning = input.isRunning;
+    const speed = isRunning ? SPEED * 1.8 : SPEED;
+
     const current = this.body.linvel().y;
     this.body.setLinvel(
-      { x: dir.x * SPEED, y: current, z: dir.z * SPEED },
+      { x: dir.x * speed, y: current, z: dir.z * speed },
       true,
     );
 
@@ -83,5 +86,9 @@ export class Player {
     // --- Sync camera ---
     const pos = this.body.translation();
     this.camera.position.set(pos.x, pos.y + PLAYER_HEIGHT, pos.z);
+
+    // console.log(
+    //   `Player pos: x=${pos.x.toFixed(2)} y=${pos.y.toFixed(2)} z=${pos.z.toFixed(2)}`,
+    // );
   }
 }
