@@ -18,11 +18,15 @@ export class Player {
   private hasFallen = false;
   private airTime = 0;
 
-  constructor(camera: THREE.PerspectiveCamera, physics: PhysicsWorld) {
+  constructor(
+    camera: THREE.PerspectiveCamera,
+    physics: PhysicsWorld,
+    spawn = { x: -83.79, y: 10, z: -8.14 },
+  ) {
     this.camera = camera;
 
     const bodyDesc = physics.RAPIER.RigidBodyDesc.dynamic()
-      .setTranslation(-83.79, 10, -8.14)
+      .setTranslation(spawn.x, spawn.y, spawn.z)
       .lockRotations();
     this.body = physics.world.createRigidBody(bodyDesc);
 
@@ -86,9 +90,5 @@ export class Player {
     // --- Sync camera ---
     const pos = this.body.translation();
     this.camera.position.set(pos.x, pos.y + PLAYER_HEIGHT, pos.z);
-
-    // console.log(
-    //   `Player pos: x=${pos.x.toFixed(2)} y=${pos.y.toFixed(2)} z=${pos.z.toFixed(2)}`,
-    // );
   }
 }

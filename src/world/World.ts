@@ -12,13 +12,16 @@ import { RemotePlayer } from "../entities/RemotePlayer";
 import { Network } from "../network/Network";
 import { MenuManager } from "../menu/MenuManager";
 
-const MY_SPAWN = { x: -83.79, y: 10, z: -8.14 };
-const THEIR_SPAWN = { x: 109.3, y: 10, z: -9.0 };
+const HOST_SPAWN = { x: -83.79, y: 10, z: -8.14 };
+const GUEST_SPAWN = { x: 109.3, y: 10, z: -9.0 };
 const WIN_SCORE = 10;
+const VOID_Y = -30;
 
 export class World {
   scene: THREE.Scene;
+  gunScene: THREE.Scene;
   camera: THREE.PerspectiveCamera;
+  gunCamera: THREE.PerspectiveCamera;
   renderer: THREE.WebGLRenderer;
   player!: Player;
   input: InputManager;
@@ -38,13 +41,16 @@ export class World {
   private myScore = 0;
   private theirScore = 0;
   private isInGame = false;
+  private isSinglePlayer = false;
   private remoteIsMoving = false;
   private remoteIsRunning = false;
 
   constructor() {
     this.scene = new THREE.Scene();
-    this.scene.background = new THREE.Color(0x87ceeb);
-    this.scene.fog = new THREE.Fog(0x87ceeb, 20, 80);
+    this.scene.background = new THREE.Color(0xc9dff0);
+    this.scene.fog = new THREE.Fog(0xc9dff0, 30, 120);
+
+    this.gunScene = new THREE.Scene();
 
     this.camera = new THREE.PerspectiveCamera(
       75,
@@ -54,11 +60,29 @@ export class World {
     );
     this.scene.add(this.camera);
 
+    this.gunCamera = new THREE.PerspectiveCamera(
+      75,
+      window.innerWidth / window.innerHeight,
+      0.01,
+      10,
+    );
+    this.gunScene.add(this.gunCamera);
+
     this.renderer = new THREE.WebGLRenderer({ antialias: true });
     this.renderer.setSize(window.innerWidth, window.innerHeight);
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    this.renderer.autoClear = false;
     document.body.appendChild(this.renderer.domElement);
+
+    // Gun scene lights — warm to match world
+    this.gunScene.add(new THREE.AmbientLight(0xfff4e0, 0.8));
+    const gunLight = new THREE.DirectionalLight(0xfff4e0, 1.2);
+    gunLight.position.set(2, 4, 2);
+    this.gunScene.add(gunLight);
+    const gunFill = new THREE.DirectionalLight(0x8899bb, 0.3);
+    gunFill.position.set(-1, 0, -1);
+    this.gunScene.add(gunFill);
 
     this.input = new InputManager();
     this.hud = new HUD();
@@ -67,7 +91,6 @@ export class World {
     this.menu = new MenuManager();
 
     window.addEventListener("resize", () => this.onResize());
-
     this.init();
   }
 
@@ -76,16 +99,15 @@ export class World {
     await this.loadMap("/map.glb");
     this.setupLights();
 
-    this.player = new Player(this.camera, this.physics);
     this.hitMarker = new HitMarker(this.scene);
     this.deathEffect = new DeathEffect(this.scene);
 
     this.remotePlayer = new RemotePlayer(this.scene);
     await this.remotePlayer.load();
-    this.remotePlayer.model.visible = false; // hide until game starts
+    this.remotePlayer.model.visible = false;
 
     this.gun = new Gun();
-    await this.gun.load(this.camera);
+    await this.gun.load(this.gunCamera, this.gunScene);
 
     this.gun.onAmmoChanged = (current, reserve) => {
       this.hud.updateAmmo(current, reserve);
@@ -94,7 +116,9 @@ export class World {
     this.gun.onShoot = () => {
       if (!this.isInGame) return;
       this.doRaycast();
-      this.network.send({ type: "player-shot" });
+      if (!this.isSinglePlayer && this.network.conn) {
+        this.network.send({ type: "player-shot" });
+      }
     };
 
     this.setupNetwork();
@@ -102,22 +126,31 @@ export class World {
   }
 
   private setupNetwork() {
+    this.menu.onSinglePlayer = () => {
+      this.startSinglePlayer();
+    };
+
     this.menu.onHost = async () => {
-      const code = await this.network.host();
-      this.menu.showHostWait(code);
+      try {
+        const code = await this.network.host();
+        this.menu.showHostWait(code);
+      } catch (e) {
+        console.error("Failed to host:", e);
+        this.menu.showJoinError("FAILED TO HOST");
+      }
     };
 
     this.menu.onJoin = async (code) => {
       this.menu.showConnecting();
       try {
         await this.network.join(code);
-      } catch {
+      } catch (e) {
+        console.error("Failed to join:", e);
         this.menu.showJoinError("FAILED TO CONNECT");
       }
     };
 
     this.network.onConnected = () => {
-      // Both players connected — host triggers countdown
       if (this.network.isHost) {
         this.network.send({ type: "game-start" });
         this.startCountdown();
@@ -137,13 +170,12 @@ export class World {
       }
 
       if (msg.type === "player-hit") {
-        // They hit me — their score goes up
         this.theirScore++;
         this.scoreHUD.update(this.myScore, this.theirScore, "YOU", "ENEMY");
         this.network.send({
           type: "score-update",
-          myScore: this.myScore, // ← was swapped
-          theirScore: this.theirScore, // ← was swapped
+          myScore: this.myScore,
+          theirScore: this.theirScore,
         });
         this.handleDeath(false);
       }
@@ -160,15 +192,30 @@ export class World {
     };
 
     this.network.onDisconnected = () => {
-      if (this.isInGame) {
+      if (this.isInGame && !this.isSinglePlayer) {
         alert("Opponent disconnected.");
         window.location.reload();
       }
     };
   }
 
+  private startSinglePlayer() {
+    this.isSinglePlayer = true;
+    this.menu.showCountdown(() => {
+      this.player = new Player(this.camera, this.physics, HOST_SPAWN);
+      this.isInGame = true;
+      this.remotePlayer.model.visible = false;
+      this.menu.showGame();
+      this.scoreHUD.hide();
+      this.setupPointerLock();
+      this.renderer.domElement.requestPointerLock();
+    });
+  }
+
   private startCountdown() {
     this.menu.showCountdown(() => {
+      const spawn = this.network.isHost ? HOST_SPAWN : GUEST_SPAWN;
+      this.player = new Player(this.camera, this.physics, spawn);
       this.isInGame = true;
       this.remotePlayer.model.visible = true;
       this.menu.showGame();
@@ -182,8 +229,11 @@ export class World {
   private doRaycast() {
     this.raycaster.setFromCamera(new THREE.Vector2(0, 0), this.camera);
 
-    // Check hit on remote player first
-    if (this.remotePlayer.isLoaded && this.remotePlayer.model.visible) {
+    if (
+      !this.isSinglePlayer &&
+      this.remotePlayer.isLoaded &&
+      this.remotePlayer.model.visible
+    ) {
       const remoteHits = this.raycaster.intersectObject(
         this.remotePlayer.model,
         true,
@@ -192,8 +242,6 @@ export class World {
         this.network.send({ type: "player-hit" });
         this.myScore++;
         this.scoreHUD.update(this.myScore, this.theirScore, "YOU", "ENEMY");
-
-        // Death effect at remote player position
         this.deathEffect.spawn(this.remotePlayer.model.position.clone());
 
         if (this.myScore >= WIN_SCORE) {
@@ -206,7 +254,6 @@ export class World {
       }
     }
 
-    // Otherwise hit the map
     const hits = this.raycaster.intersectObjects(this.mapMeshes, false);
     if (hits.length > 0) {
       const hit = hits[0];
@@ -221,7 +268,6 @@ export class World {
 
   private handleDeath(iKilled: boolean) {
     if (!iKilled) {
-      // I died — spawn death effect at my position
       const pos = this.player.body.translation();
       this.deathEffect.spawn(new THREE.Vector3(pos.x, pos.y, pos.z));
     }
@@ -231,25 +277,27 @@ export class World {
       return;
     }
 
-    // Reset round
     setTimeout(() => {
       this.resetPositions();
-      if (this.network.isHost) {
+      if (!this.isSinglePlayer && this.network.isHost) {
         this.network.send({ type: "round-reset" });
       }
-    }, 800); // short delay so death effect plays
+    }, 800);
   }
 
   private resetPositions() {
-    // Reset local player
+    const mySpawn = this.network.isHost ? HOST_SPAWN : GUEST_SPAWN;
+    const theirSpawn = this.network.isHost ? GUEST_SPAWN : HOST_SPAWN;
+
     this.player.body.setTranslation(
-      { x: MY_SPAWN.x, y: MY_SPAWN.y, z: MY_SPAWN.z },
+      { x: mySpawn.x, y: mySpawn.y, z: mySpawn.z },
       true,
     );
     this.player.body.setLinvel({ x: 0, y: 0, z: 0 }, true);
 
-    // Reset remote player visually
-    this.remotePlayer.setPosition(THEIR_SPAWN.x, THEIR_SPAWN.y, THEIR_SPAWN.z);
+    if (!this.isSinglePlayer) {
+      this.remotePlayer.setPosition(theirSpawn.x, theirSpawn.y, theirSpawn.z);
+    }
   }
 
   private endGame(winnerName: string) {
@@ -257,7 +305,9 @@ export class World {
     document.exitPointerLock();
     this.scoreHUD.hide();
     this.menu.showWinner(winnerName);
-    this.network.destroy();
+    if (!this.isSinglePlayer) {
+      this.network.destroy();
+    }
   }
 
   private async loadMap(url: string) {
@@ -278,18 +328,28 @@ export class World {
   }
 
   private setupLights() {
-    const sun = new THREE.DirectionalLight(0xffffff, 2);
-    sun.position.set(20, 40, 20);
+    // Hemisphere light — sky from above, warm ground bounce below
+    const hemi = new THREE.HemisphereLight(0x87ceeb, 0x4a3728, 0.6);
+    this.scene.add(hemi);
+
+    // Main sun — warm, angled for natural shadows
+    const sun = new THREE.DirectionalLight(0xfff4e0, 2.5);
+    sun.position.set(40, 60, 20);
     sun.castShadow = true;
-    sun.shadow.mapSize.set(2048, 2048);
+    sun.shadow.mapSize.set(4096, 4096);
     sun.shadow.camera.near = 0.5;
-    sun.shadow.camera.far = 200;
-    sun.shadow.camera.left = -50;
-    sun.shadow.camera.right = 50;
-    sun.shadow.camera.top = 50;
-    sun.shadow.camera.bottom = -50;
+    sun.shadow.camera.far = 300;
+    sun.shadow.camera.left = -80;
+    sun.shadow.camera.right = 80;
+    sun.shadow.camera.top = 80;
+    sun.shadow.camera.bottom = -80;
+    sun.shadow.bias = -0.0003;
     this.scene.add(sun);
-    this.scene.add(new THREE.AmbientLight(0xffffff, 0.5));
+
+    // Soft fill from opposite side — no pitch black shadows
+    const fill = new THREE.DirectionalLight(0x88aacc, 0.4);
+    fill.position.set(-20, 10, -20);
+    this.scene.add(fill);
   }
 
   private setupPointerLock() {
@@ -309,8 +369,31 @@ export class World {
     this.player.update(dt, this.input);
     this.physics.step(dt);
 
-    if (this.isInGame) {
-      // Send our position to the other player
+    // Void death — fell off the world
+    if (this.player.body.translation().y < VOID_Y) {
+      if (this.isSinglePlayer) {
+        this.player.body.setTranslation(
+          { x: HOST_SPAWN.x, y: HOST_SPAWN.y, z: HOST_SPAWN.z },
+          true,
+        );
+        this.player.body.setLinvel({ x: 0, y: 0, z: 0 }, true);
+      } else {
+        this.theirScore++;
+        this.scoreHUD.update(this.myScore, this.theirScore, "YOU", "ENEMY");
+        this.network.send({
+          type: "score-update",
+          myScore: this.myScore,
+          theirScore: this.theirScore,
+        });
+        this.handleDeath(false);
+      }
+    }
+
+    // Sync gun camera to main camera every frame
+    this.gunCamera.position.copy(this.camera.position);
+    this.gunCamera.quaternion.copy(this.camera.quaternion);
+
+    if (this.isInGame && !this.isSinglePlayer) {
       const pos = this.player.body.translation();
       this.network.send({
         type: "player-update",
@@ -337,12 +420,20 @@ export class World {
     this.deathEffect.update(dt);
     this.input.flushMouseDelta();
 
+    // Pass 1: render world
+    this.renderer.clear();
     this.renderer.render(this.scene, this.camera);
+
+    // Pass 2: render gun on top, clearing only depth
+    this.renderer.clearDepth();
+    this.renderer.render(this.gunScene, this.gunCamera);
   }
 
   private onResize() {
     this.camera.aspect = window.innerWidth / window.innerHeight;
     this.camera.updateProjectionMatrix();
+    this.gunCamera.aspect = window.innerWidth / window.innerHeight;
+    this.gunCamera.updateProjectionMatrix();
     this.renderer.setSize(window.innerWidth, window.innerHeight);
   }
 }

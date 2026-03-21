@@ -20,50 +20,41 @@ export class Gun {
   private currentState: GunState = "draw";
   private isLoaded = false;
   private playerCamera!: THREE.PerspectiveCamera;
+  private gunScene!: THREE.Scene;
   private debugMode = false;
   private debugEl?: HTMLElement;
+
+  // Position/rotation offsets (tuned values preserved)
+  private posOffset = new THREE.Vector3(0.23, -2.19, -0.63);
+  private rotOffset = new THREE.Euler(0.05, -9.4, 0.05);
+  private scaleFactor = 1.45;
 
   // Ammo
   currentAmmo = MAG_SIZE;
   reserveAmmo = RESERVE_MAX;
 
-  // Semi-auto lock — true while fire animation is playing
+  // Semi-auto lock
   private fireAnimPlaying = false;
 
   // Callbacks
   onAmmoChanged?: (current: number, reserve: number) => void;
-  onShoot?: () => void; // called when a shot is actually fired
+  onShoot?: () => void;
 
   constructor() {}
 
-  async load(camera: THREE.PerspectiveCamera) {
+  async load(camera: THREE.PerspectiveCamera, scene: THREE.Scene) {
     this.playerCamera = camera;
+    this.gunScene = scene;
 
     const loader = new GLTFLoader();
     const gltf = await loader.loadAsync("/p_gun.glb");
     this.model = gltf.scene;
 
-    this.playerCamera.add(this.model);
+    // Add to gun scene directly — NOT to camera
+    // We manually sync position in update()
+    this.gunScene.add(this.model);
 
-    this.model.traverse((child) => {
-      if (child instanceof THREE.Mesh) {
-        // Force gun to always render on top — no clipping through walls or world
-        child.renderOrder = 999;
-        if (Array.isArray(child.material)) {
-          child.material.forEach((m) => {
-            m.depthTest = false;
-            m.depthWrite = false;
-          });
-        } else {
-          child.material.depthTest = false;
-          child.material.depthWrite = false;
-        }
-      }
-    });
-
-    this.model.position.set(0.23, -2.19, -0.63);
-    this.model.rotation.set(0.05, -9.4, 0.05);
-    this.model.scale.setScalar(1.45);
+    this.model.scale.setScalar(this.scaleFactor);
 
     this.mixer = new THREE.AnimationMixer(this.model);
 
@@ -96,9 +87,8 @@ export class Gun {
 
     this.mixer.addEventListener("finished", (e) => {
       const finishedAction = e.action;
-
       if (finishedAction === this.actions["fire"]) {
-        this.fireAnimPlaying = false; // unlock semi-auto
+        this.fireAnimPlaying = false;
         this.transitionTo("idle");
       } else if (finishedAction === this.actions["reload"]) {
         this.finishReload();
@@ -119,14 +109,23 @@ export class Gun {
       this.updateDebugUI();
     }
 
-    // Initial ammo UI
     this.onAmmoChanged?.(this.currentAmmo, this.reserveAmmo);
+  }
+
+  private syncModelToCamera() {
+    // Compute world offset from camera position + orientation
+    const offset = this.posOffset.clone();
+    offset.applyQuaternion(this.playerCamera.quaternion);
+    this.model.position.copy(this.playerCamera.position).add(offset);
+
+    // Apply camera rotation + fixed rotation offset
+    const rotQuat = new THREE.Quaternion().setFromEuler(this.rotOffset);
+    this.model.quaternion.copy(this.playerCamera.quaternion).multiply(rotQuat);
   }
 
   private finishReload() {
     if (this.reserveAmmo <= 0) return;
-
-    const needed = MAG_SIZE - this.currentAmmo; // tactical: only fill what's missing
+    const needed = MAG_SIZE - this.currentAmmo;
     const taken = Math.min(needed, this.reserveAmmo);
     this.currentAmmo += taken;
     this.reserveAmmo -= taken;
@@ -150,12 +149,10 @@ export class Gun {
   }
 
   fire(): boolean {
-    // Returns true if shot was actually fired
     if (this.fireAnimPlaying) return false;
     if (this.currentState === "reload") return false;
     if (this.currentState === "draw") return false;
     if (this.currentAmmo <= 0) {
-      // Empty — auto reload if reserve available
       if (this.reserveAmmo > 0) this.reload();
       return false;
     }
@@ -171,7 +168,7 @@ export class Gun {
   reload() {
     if (this.currentState === "reload") return;
     if (this.currentState === "draw") return;
-    if (this.currentAmmo === MAG_SIZE) return; // already full
+    if (this.currentAmmo === MAG_SIZE) return;
     if (this.reserveAmmo <= 0) return;
     this.transitionTo("reload", 0.2);
   }
@@ -191,6 +188,9 @@ export class Gun {
     isReloading: boolean,
   ) {
     if (!this.isLoaded) return;
+
+    // Always sync model to camera every frame
+    this.syncModelToCamera();
 
     if (
       this.currentState !== "fire" &&
@@ -216,7 +216,6 @@ export class Gun {
     this.mixer.update(dt);
   }
 
-  // --- Debug controls unchanged ---
   private setupDebugControls() {
     this.debugEl = document.createElement("div");
     this.debugEl.style.cssText = `
@@ -235,46 +234,48 @@ export class Gun {
         SCALE_STEP = 0.05;
       switch (e.code) {
         case "ArrowLeft":
-          this.model.position.x -= STEP;
+          this.posOffset.x -= STEP;
           break;
         case "ArrowRight":
-          this.model.position.x += STEP;
+          this.posOffset.x += STEP;
           break;
         case "ArrowUp":
-          this.model.position.z -= STEP;
+          this.posOffset.z -= STEP;
           break;
         case "ArrowDown":
-          this.model.position.z += STEP;
+          this.posOffset.z += STEP;
           break;
         case "KeyR":
-          this.model.position.y += STEP;
+          this.posOffset.y += STEP;
           break;
         case "KeyF":
-          this.model.position.y -= STEP;
+          this.posOffset.y -= STEP;
           break;
         case "KeyI":
-          this.model.rotation.x -= ROT_STEP;
+          this.rotOffset.x -= ROT_STEP;
           break;
         case "KeyK":
-          this.model.rotation.x += ROT_STEP;
+          this.rotOffset.x += ROT_STEP;
           break;
         case "KeyJ":
-          this.model.rotation.y -= ROT_STEP;
+          this.rotOffset.y -= ROT_STEP;
           break;
         case "KeyL":
-          this.model.rotation.y += ROT_STEP;
+          this.rotOffset.y += ROT_STEP;
           break;
         case "KeyU":
-          this.model.rotation.z -= ROT_STEP;
+          this.rotOffset.z -= ROT_STEP;
           break;
         case "KeyO":
-          this.model.rotation.z += ROT_STEP;
+          this.rotOffset.z += ROT_STEP;
           break;
         case "Equal":
-          this.model.scale.setScalar(this.model.scale.x + SCALE_STEP);
+          this.scaleFactor += SCALE_STEP;
+          this.model.scale.setScalar(this.scaleFactor);
           break;
         case "Minus":
-          this.model.scale.setScalar(this.model.scale.x - SCALE_STEP);
+          this.scaleFactor -= SCALE_STEP;
+          this.model.scale.setScalar(this.scaleFactor);
           break;
       }
       this.updateDebugUI();
@@ -283,9 +284,9 @@ export class Gun {
 
   private updateDebugUI() {
     if (!this.debugEl) return;
-    const p = this.model.position;
-    const r = this.model.rotation;
-    const s = this.model.scale.x;
+    const p = this.posOffset;
+    const r = this.rotOffset;
+    const s = this.scaleFactor;
     this.debugEl.innerHTML = `
       <b>GUN DEBUG</b><br><br>
       <b>Position</b><br>
@@ -299,9 +300,9 @@ export class Gun {
       <b>Scale</b><br>
       ${s.toFixed(3)} ← + / -<br><br>
       <b>Copy into Gun.ts:</b><br>
-      position.set(${p.x.toFixed(3)}, ${p.y.toFixed(3)}, ${p.z.toFixed(3)})<br>
-      rotation.set(${r.x.toFixed(3)}, ${r.y.toFixed(3)}, ${r.z.toFixed(3)})<br>
-      scale.setScalar(${s.toFixed(3)})
+      posOffset = new THREE.Vector3(${p.x.toFixed(3)}, ${p.y.toFixed(3)}, ${p.z.toFixed(3)})<br>
+      rotOffset = new THREE.Euler(${r.x.toFixed(3)}, ${r.y.toFixed(3)}, ${r.z.toFixed(3)})<br>
+      scaleFactor = ${s.toFixed(3)}
     `;
   }
 }
