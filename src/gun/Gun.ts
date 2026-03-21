@@ -26,7 +26,7 @@ export class Gun {
 
   // Position/rotation offsets (tuned values preserved)
   private posOffset = new THREE.Vector3(0.23, -2.19, -0.63);
-  private rotOffset = new THREE.Euler(0.05, -9.4, 0.05);
+  private rotOffset = new THREE.Euler(0.0, -9.25, 0.05);
   private scaleFactor = 1.45;
 
   // Ammo

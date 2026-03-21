@@ -71,7 +71,7 @@ export class Player {
     dir.normalize().applyEuler(new THREE.Euler(0, this.yaw, 0));
 
     const isRunning = input.isRunning;
-    const speed = isRunning ? SPEED * 1.8 : SPEED;
+    const speed = isRunning ? SPEED * 2.5 : SPEED;
 
     const current = this.body.linvel().y;
     this.body.setLinvel(
